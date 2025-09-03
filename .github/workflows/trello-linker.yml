@@ -1,0 +1,89 @@
+# .github/workflows/trello-linker.yml
+# This is the REUSABLE workflow in your central repository.
+
+name: Reusable Trello Linker
+
+on:
+  workflow_call:
+    inputs:
+      target-branches:
+        description: 'A JSON array of branches to run the merge action on, e.g., ''["main", "stg"]'''
+        required: false
+        type: string
+        default: '["main"]'
+    secrets:
+      TRELLO_API_KEY:
+        required: true
+      TRELLO_AUTH_TOKEN:
+        required: true
+
+jobs:
+  # Job 1: A setup job that runs first to get the card ID.
+  extract-info:
+    runs-on: ubuntu-latest
+    outputs:
+      card_id: ${{ steps.extract_card.outputs.card_id }}
+    steps:
+      - name: Extract Trello Card ID from Branch Name
+        id: extract_card
+        run: |
+          branch_name="${{ github.event.pull_request.head.ref }}"
+          echo "Searching for Card ID in branch: $branch_name"
+          # This command finds ALL 8-character alphanumeric strings
+          # and uses 'tail -n 1' to select only the LAST one found.
+          card_id=$(echo "$branch_name" | grep -oP '([a-zA-Z0-9]{8})' | tail -n 1)
+          if [[ -n "$card_id" ]]; then
+            echo "Found Trello Card ID: $card_id"
+            echo "card_id=$card_id" >> $GITHUB_OUTPUT
+          fi
+
+  # Job 2: Posts a comment when the PR is opened or edited.
+  link-trello-card:
+    needs: extract-info
+    runs-on: ubuntu-latest
+    if: needs.extract-info.outputs.card_id && github.event.action != 'closed'
+    steps:
+      - name: Post Comment to Trello via API
+        env:
+          MESSAGE: |
+            ⏳ **Pull Request Activity**
+
+            A pull request was updated by **${{ github.actor }}**:
+
+            **Title:** [${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})
+            **Base Branch:** ${{ github.event.pull_request.base.ref }}
+            **Head Branch:** ${{ github.event.pull_request.head.ref }}
+        run: |
+          curl --request POST \
+            --url 'https://api.trello.com/1/cards/${{ needs.extract-info.outputs.card_id }}/actions/comments' \
+            --header 'Accept: application/json' \
+            --data-urlencode "text=$MESSAGE" \
+            --data-urlencode "key=${{ secrets.TRELLO_API_KEY }}" \
+            --data-urlencode "token=${{ secrets.TRELLO_AUTH_TOKEN }}"
+
+  # Job 3: Posts a final comment when the PR is merged.
+  link-trello-card-on-merge:
+    needs: extract-info
+    runs-on: ubuntu-latest
+    if: >
+      needs.extract-info.outputs.card_id &&
+      github.event.pull_request.merged == true &&
+      contains(fromJSON(inputs.target-branches), github.event.pull_request.base.ref)
+    steps:
+      - name: Post Merge Comment to Trello via API
+        env:
+          MESSAGE: |
+            🚀 **Pull Request Merged**
+
+            Pull request has been successfully merged by **${{ github.actor }}**:
+
+            **Title:** [${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})
+            **Merged into:** ${{ github.event.pull_request.base.ref }}
+            **Commit:** ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          curl --request POST \
+            --url 'https://api.trello.com/1/cards/${{ needs.extract-info.outputs.card_id }}/actions/comments' \
+            --header 'Accept: application/json' \
+            --data-urlencode "text=$MESSAGE" \
+            --data-urlencode "key=${{ secrets.TRELLO_API_KEY }}" \
+            --data-urlencode "token=${{ secrets.TRELLO_AUTH_TOKEN }}"
